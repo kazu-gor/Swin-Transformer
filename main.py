@@ -82,6 +82,8 @@ def parse_option():
 
 
 def main(config):
+    # iwasaki comment [2023-07-04 17:48:04]
+    # TODO replace sekkai dataset, dataloader
     dataset_train, dataset_val, data_loader_train, data_loader_val, mixup_fn = build_loader(config)
 
     logger.info(f"Creating model:{config.MODEL.TYPE}/{config.MODEL.NAME}")

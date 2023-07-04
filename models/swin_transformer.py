@@ -246,15 +246,16 @@ class SwinTransformerBlock(nn.Module):
         self.fused_window_process = fused_window_process
 
     def forward(self, x):
-        H, W = self.input_resolution
-        B, L, C = x.shape
+        H, W = self.input_resolution  # iwasaki comment) 解像度 (Height, Width)
+        B, L, C = x.shape  # iwasaki comment) Batch, Length, Channel
         assert L == H * W, "input feature has wrong size"
 
         shortcut = x
         x = self.norm1(x)
-        x = x.view(B, H, W, C)
+        x = x.view(B, H, W, C)  # LをH, Wに分割
 
         # cyclic shift
+        # iwasaki comment) 一旦無視
         if self.shift_size > 0:
             if not self.fused_window_process:
                 shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
@@ -276,6 +277,7 @@ class SwinTransformerBlock(nn.Module):
         attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
 
         # reverse cyclic shift
+        # iwasaki comment) 一旦無視
         if self.shift_size > 0:
             if not self.fused_window_process:
                 shifted_x = window_reverse(attn_windows, self.window_size, H, W)  # B H' W' C
@@ -291,7 +293,11 @@ class SwinTransformerBlock(nn.Module):
         # FFN
         x = x + self.drop_path(self.mlp(self.norm2(x)))
 
-        return x
+        # iwasaki comment [2023-07-04 17:05:04]
+        # xを元画像の解像度に再構成して出力
+        x_feature = x.view(B, H, W, C)
+
+        return x, x_feature
 
     def extra_repr(self) -> str:
         return f"dim={self.dim}, input_resolution={self.input_resolution}, num_heads={self.num_heads}, " \
@@ -414,13 +420,15 @@ class BasicLayer(nn.Module):
 
     def forward(self, x):
         for blk in self.blocks:
+            # iwasaki comment [2023-07-04 17:07:04]
+            # Add return value blk -> x_feature
             if self.use_checkpoint:
-                x = checkpoint.checkpoint(blk, x)
+                x, x_feature = checkpoint.checkpoint(blk, x)
             else:
-                x = blk(x)
+                x, x_feature = blk(x)
         if self.downsample is not None:
             x = self.downsample(x)
-        return x
+        return x, x_feature
 
     def extra_repr(self) -> str:
         return f"dim={self.dim}, input_resolution={self.input_resolution}, depth={self.depth}"
@@ -480,6 +488,11 @@ class PatchEmbed(nn.Module):
         if self.norm is not None:
             flops += Ho * Wo * self.embed_dim
         return flops
+
+
+class ClassEmbed(nn.Module):
+    # TODO
+    pass
 
 
 class SwinTransformer(nn.Module):
@@ -591,18 +604,30 @@ class SwinTransformer(nn.Module):
             x = x + self.absolute_pos_embed
         x = self.pos_drop(x)
 
+        # iwasaki comment [2023-07-04 17:11:04]
+        # Add return value layer -> x_feature
+        # Add list to store x_feature -> x_features
+        x_features = []
         for layer in self.layers:
-            x = layer(x)
+            x, x_feature = layer(x)
+            x_features.append(x_feature)
 
         x = self.norm(x)  # B L C
         x = self.avgpool(x.transpose(1, 2))  # B C 1
         x = torch.flatten(x, 1)
-        return x
+        # iwasaki comment [2023-07-04 17:21:04]
+        # Add return value -> x_features
+        return x, x_features
 
     def forward(self, x):
-        x = self.forward_features(x)
-        x = self.head(x)
-        return x
+        x, x_features = self.forward_features(x)
+        # iwasaki comment [2023-07-04 17:21:04]
+        # Comment out HEAD as it is not needed.
+        # x = self.head(x)
+
+        # iwasaki comment [2023-07-04 17:21:04]
+        # Add return value -> x_features
+        return x, x_features
 
     def flops(self):
         flops = 0
