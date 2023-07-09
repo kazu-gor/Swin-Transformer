@@ -236,6 +236,21 @@ _C.TEST.SHUFFLE = False
 # [SimMIM] Whether to enable pytorch amp, overwritten by command line argument
 _C.ENABLE_AMP = False
 
+# -----------------------------------------------------------------------------
+# iwasaki comment [2023-07-09 15:30:09]
+# Transformer Decoder
+# -----------------------------------------------------------------------------
+_C.MODEL_DECODER = CN()
+_C.MODEL_DECODER.D_MODEL = 512
+_C.MODEL_DECODER.NHEAD = 8
+_C.MODEL_DECODER.NUM_DECODER_LAYERS = 6
+_C.MODEL_DECODER.DIM_FEEDFORWARD = 2048
+_C.MODEL_DECODER.DROPOUT = 0.1
+_C.MODEL_DECODER.ACTIVATION = "relu"
+_C.MODEL_DECODER.NORMALIZE_BEFORE = False
+_C.MODEL_DECODER.RETURN_INTERMEDIATE_DEC = False
+
+
 # Enable Pytorch automatic mixed precision (amp).
 _C.AMP_ENABLE = True
 # [Deprecated] Mixed precision opt level of apex, if O0, no apex amp is used ('O0', 'O1', 'O2')
