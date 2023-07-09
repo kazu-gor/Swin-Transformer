@@ -6,6 +6,7 @@
 # --------------------------------------------------------
 
 from numba.core.sigutils import normalize_signature
+import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,8 +15,8 @@ from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from typing import Optional
 from torch import Tensor
 
-from MaskDINO.detectron2.export.caffe2_patch import patch
-from detectron2.tools.visualize_data import output
+# from MaskDINO.detectron2.export.caffe2_patch import patch
+# from detectron2.tools.visualize_data import output
 
 try:
     import os
@@ -837,7 +838,7 @@ class PatchSelectionTransformer(nn.Module):
                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
                  use_checkpoint=False, fused_window_process=False,
                  # other
-                 num_queries=100, hidden_dim=256, num_classes=91):
+                 num_queries=100, hidden_dim=256):
         super().__init__()
 
         self.encoder = SwinTransformer(
@@ -851,6 +852,7 @@ class PatchSelectionTransformer(nn.Module):
 
         decoder_layer = TransformerDecoderLayer(d_model, nhead, dim_feedforward,
                                                 dropout, activation, normalize_before)
+        decoder_norm = nn.LayerNorm(d_model)
         self.decoder_stege1 = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
                                                  return_intermediate=return_intermediate_dec)
         self.decoder_stege2 = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
@@ -894,6 +896,17 @@ class PatchSelectionTransformer(nn.Module):
                'stage3': outputs_class_stege3
         }
         return out
+
+
+def _get_activation_fn(activation):
+    """Return an activation function given a string"""
+    if activation == "relu":
+        return F.relu
+    if activation == "gelu":
+        return F.gelu
+    if activation == "glu":
+        return F.glu
+    raise RuntimeError(F"activation should be relu/gelu, not {activation}.")
 
 
 class SetCriterion(nn.Module):
@@ -1028,4 +1041,3 @@ def accuracy(output, target, topk=(1,)):
         correct_k = correct[:k].view(-1).float().sum(0)
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
-
