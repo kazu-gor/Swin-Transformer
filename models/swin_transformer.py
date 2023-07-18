@@ -135,6 +135,9 @@ class WindowAttention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
+        # iwasaki comment [2023-07-15 17:18:15]
+        # なぜこれを使うのか
+        # https://github.com/huggingface/pytorch-image-models/discussions/1284
         trunc_normal_(self.relative_position_bias_table, std=.02)
         self.softmax = nn.Softmax(dim=-1)
 
@@ -173,7 +176,8 @@ class WindowAttention(nn.Module):
         x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x
+        # iwasaki comment [2023-07-18 22:21:18] add: return relative_position_bias
+        return x, relative_position_bias
 
     def extra_repr(self) -> str:
         return f'dim={self.dim}, window_size={self.window_size}, num_heads={self.num_heads}'
@@ -302,7 +306,8 @@ class SwinTransformerBlock(nn.Module):
 
         # W-MSA/SW-MSA
         # nW*B, window_size*window_size, C
-        attn_windows = self.attn(x_windows, mask=self.attn_mask)
+        # iwasaki comment [2023-07-18 22:22:18] add: relative_position_bias
+        attn_windows, relative_position_bias = self.attn(x_windows, mask=self.attn_mask)
 
         # merge windows
         attn_windows = attn_windows.view(-1,
@@ -335,7 +340,7 @@ class SwinTransformerBlock(nn.Module):
         # self.decoder expect memory size is [L, B, C]
         # commented out below
         # x_feature = x.view(B, H, W, C)
-        return x
+        return x, relative_position_bias
 
     def extra_repr(self) -> str:
         return f"dim={self.dim}, input_resolution={self.input_resolution}, num_heads={self.num_heads}, " \
@@ -391,7 +396,7 @@ class PatchMerging(nn.Module):
         x = x.view(B, -1, 4 * C)  # B H/2*W/2 4*C
 
         x = self.norm(x)
-        x = self.reduction(x)
+        x = self.reduction(x)  # B H/2*W/2 2*C
 
         return x
 
@@ -441,6 +446,7 @@ class BasicLayer(nn.Module):
         self.blocks = nn.ModuleList([
             SwinTransformerBlock(dim=dim, input_resolution=input_resolution,
                                  num_heads=num_heads, window_size=window_size,
+                                 # 偶数: 0, 奇数: window_size // 2
                                  shift_size=0 if (
                                      i % 2 == 0) else window_size // 2,
                                  mlp_ratio=mlp_ratio,
@@ -464,12 +470,13 @@ class BasicLayer(nn.Module):
             # iwasaki comment [2023-07-04 17:07:04]
             # Add return value blk -> x_feature
             if self.use_checkpoint:
-                x = checkpoint.checkpoint(blk, x)
+                x, relative_position_bias = checkpoint.checkpoint(blk, x)
             else:
-                x = blk(x)
+                x, relative_position_bias = blk(x)
         if self.downsample is not None:
             x = self.downsample(x)
-        return x
+        # iwasaki comment [2023-07-18 22:30:18] add: relative_position_bias
+        return x, relative_position_bias
 
     def extra_repr(self) -> str:
         return f"dim={self.dim}, input_resolution={self.input_resolution}, depth={self.depth}"
@@ -630,20 +637,22 @@ class TransformerDecoderLayer(nn.Module):
     def forward_pre(self, tgt, memory,
                     tgt_mask: Optional[Tensor] = None,
                     memory_mask: Optional[Tensor] = None,
-                    tgt_key_padding_mask: Optional[Tensor] = None,
-                    memory_key_padding_mask: Optional[Tensor] = None,
+                    # tgt_key_padding_mask: Optional[Tensor] = None,
+                    # memory_key_padding_mask: Optional[Tensor] = None,
                     pos: Optional[Tensor] = None,
                     query_pos: Optional[Tensor] = None):
         tgt2 = self.norm1(tgt)
         q = k = self.with_pos_embed(tgt2, query_pos)
         tgt2 = self.self_attn(q, k, value=tgt2, attn_mask=tgt_mask,
-                              key_padding_mask=tgt_key_padding_mask)[0]
+                              # key_padding_mask=tgt_key_padding_mask
+                              )[0]
         tgt = tgt + self.dropout1(tgt2)
         tgt2 = self.norm2(tgt)
         tgt2 = self.multihead_attn(query=self.with_pos_embed(tgt2, query_pos),
                                    key=self.with_pos_embed(memory, pos),
                                    value=memory, attn_mask=memory_mask,
-                                   key_padding_mask=memory_key_padding_mask)[0]
+                                   # key_padding_mask=memory_key_padding_mask
+                                   )[0]
         tgt = tgt + self.dropout2(tgt2)
         tgt2 = self.norm3(tgt)
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt2))))
@@ -701,7 +710,7 @@ class SwinTransformer(nn.Module):
                  use_checkpoint=False, fused_window_process=False, **kwargs):
         super().__init__()
 
-        self.num_classes = num_classes
+        # self.num_classes = num_classes
         self.num_layers = len(depths)
         self.embed_dim = embed_dim
         self.ape = ape
@@ -711,7 +720,8 @@ class SwinTransformer(nn.Module):
 
         # split image into non-overlapping patches
         self.patch_embed = PatchEmbed(
-            img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,
+            img_size=img_size, patch_size=patch_size,
+            in_chans=in_chans, embed_dim=embed_dim,
             norm_layer=norm_layer if self.patch_norm else None)
         num_patches = self.patch_embed.num_patches
         patches_resolution = self.patch_embed.patches_resolution
@@ -752,8 +762,8 @@ class SwinTransformer(nn.Module):
 
         self.norm = norm_layer(self.num_features)
         self.avgpool = nn.AdaptiveAvgPool1d(1)
-        self.head = nn.Linear(
-            self.num_features, num_classes) if num_classes > 0 else nn.Identity()
+        # self.head = nn.Linear(
+        #     self.num_features, num_classes) if num_classes > 0 else nn.Identity()
 
         self.apply(self._init_weights)
 
@@ -784,30 +794,32 @@ class SwinTransformer(nn.Module):
         # Add return value layer -> x_feature
         # Add list to store x_feature -> x_features
         x_features = []
+        x_relative_position_bias = []
         for layer in self.layers:
-            x = layer(x)
+            x, relative_position_bias = layer(x)
             # iwasaki comment [2023-07-05 20:37:05]
             # x size is [B, L, C]
-            x_features.append(x.transpose(0, 1))  # transposed x is [L, B, C]
+            x_features.append(x.transpose(0, 1))  # [L, B, C]
+            x_relative_position_bias.append(relative_position_bias.unsqueeze(0))  # [1, nH, Wh*Ww, Wh*Ww]
 
         # x = self.norm(x)  # B L C
         # x = self.avgpool(x.transpose(1, 2))  # B C 1
         # x = torch.flatten(x, 1)
         # iwasaki comment [2023-07-04 17:21:04]
         # Add return value -> x_features
-        return x, x_features
+        return x, x_features, x_relative_position_bias
 
     def forward(self, x):
         # iwasaki comment [2023-07-05 20:12:05]
         # x size is [B, C, H, W]
-        x, x_features = self.forward_features(x)
+        x, x_features, x_relative_position_bias = self.forward_features(x)
         # iwasaki comment [2023-07-04 17:21:04]
         # Comment out HEAD as it is not needed.
         # x = self.head(x)
 
         # iwasaki comment [2023-07-04 17:21:04]
         # Add return value -> x_features
-        return x, x_features
+        return x, x_features, x_relative_position_bias
 
     def flops(self):
         flops = 0
@@ -853,47 +865,63 @@ class PatchSelectionTransformer(nn.Module):
         decoder_layer = TransformerDecoderLayer(d_model, nhead, dim_feedforward,
                                                 dropout, activation, normalize_before)
         decoder_norm = nn.LayerNorm(d_model)
-        self.decoder_stege1 = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
+        self.decoder_stage1 = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
                                                  return_intermediate=return_intermediate_dec)
-        self.decoder_stege2 = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
+        self.decoder_stage2 = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
                                                  return_intermediate=return_intermediate_dec)
-        self.decoder_stege3 = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
+        self.decoder_stage3 = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
                                                  return_intermediate=return_intermediate_dec)
 
         hidden_dim = d_model
         self.class_embed = nn.Linear(hidden_dim, 1)
-        self.query_embed = nn.Embedding(num_queries, hidden_dim)
+
+        self.query_embed_stage1 = nn.Embedding(num_queries, hidden_dim)
+        self.query_embed_stage2 = nn.Embedding(num_queries, hidden_dim)
+        self.query_embed_stage3 = nn.Embedding(num_queries, hidden_dim)
         self.patch_size = patch_size
 
-    def forward(self, src, mask, query_embed, pos_embed):  # src size is [B, C, H, W]
+    def forward(self, src):  # src size is [B, C, H, W]
         bs, c, h, w = src.shape
-        pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
-        query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
-        mask = mask.flatten(1)
 
-        tgt = torch.zeros_like(query_embed)
-        _, memories = self.encoder(src)
+        _, memories, pos_embed = self.encoder(src)
 
         # TODO: patch length = number of query
         # TODO: 各ウィンドウごとにdecoderを実行するようにしたい
-        # iwasaki comment [2023-07-05 20:37:05]
-        # self.decoder expect memory size is [L, B, C]
-        hs1 = self.decoder(tgt, memories[0], memory_key_padding_mask=mask,
-                           pos=pos_embed, query_pos=query_embed)
-        hs2 = self.decoder(tgt, memories[1], memory_key_padding_mask=mask,
-                           pos=pos_embed, query_pos=query_embed)
-        hs3 = self.decoder(tgt, memories[2], memory_key_padding_mask=mask,
-                           pos=pos_embed, query_pos=query_embed)
+        query_embed_stage1 = self.query_embed.weight.unsqueeze(
+                1).repeat(1, bs, 1)
+        query_embed_stage2 = self.query_embed.weight.unsqueeze(
+                1).repeat(1, bs, 1)
+        query_embed_stage3 = self.query_embed.weight.unsqueeze(
+                1).repeat(1, bs, 1)
+        # mask = mask.flatten(1)
 
-        outputs_class_stage1 = self.class_embed(hs1.transpose(1, 2))  # [B, 64, 1]
-        outputs_class_stage2 = self.class_embed(hs2.transpose(1, 2))  # [B, 16, 1]
-        outputs_class_stege3 = self.class_embed(hs3.transpose(1, 2))  # [B, 4, 1]
+        tgt_stage1 = torch.zeros_like(query_embed_stage1)
+        tgt_stage2 = torch.zeros_like(query_embed_stage2)
+        tgt_stage3 = torch.zeros_like(query_embed_stage3)
+
+        # iwasaki comment [2023-07-05 20:37:05] self.decoder expect memory size is [L, B, C]
+        hs1 = self.decoder_stage1(tgt_stage1, memories[0],
+                                  # memory_key_padding_mask=mask,
+                                  pos=pos_embed[0],
+                                  query_pos=query_embed_stage1)
+        hs2 = self.decoder_stage2(tgt_stage2, memories[1],
+                                  # memory_key_padding_mask=mask,
+                                  pos=pos_embed[1],
+                                  query_pos=query_embed_stage2)
+        hs3 = self.decoder_stage3(tgt_stage3, memories[2],
+                                  # memory_key_padding_mask=mask,
+                                  pos=pos_embed[2],
+                                  query_pos=query_embed_stage3)
+
+        outputs_class_stage1 = self.class_embed(hs1.transpose(1, 2))
+        outputs_class_stage2 = self.class_embed(hs2.transpose(1, 2))
+        outputs_class_stage3 = self.class_embed(hs3.transpose(1, 2))
 
         # TODO: それぞれのクラス出力を統合する
         out = {
                'stage1': outputs_class_stage1,
                'stage2': outputs_class_stage2,
-               'stage3': outputs_class_stege3
+               'stage3': outputs_class_stage3
         }
         return out
 
