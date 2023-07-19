@@ -5,7 +5,6 @@
 # Written by Ze Liu
 # --------------------------------------------------------
 
-from numba.core.sigutils import normalize_signature
 import copy
 import torch
 import torch.nn as nn
@@ -160,7 +159,7 @@ class WindowAttention(nn.Module):
             self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,nH
         relative_position_bias = relative_position_bias.permute(
             2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
-        attn = attn + relative_position_bias.unsqueeze(0)
+        attn = attn + relative_position_bias.unsqueeze(0)  # attn size: nH, B_, N, N
 
         if mask is not None:
             nW = mask.shape[0]
@@ -637,21 +636,21 @@ class TransformerDecoderLayer(nn.Module):
     def forward_pre(self, tgt, memory,
                     tgt_mask: Optional[Tensor] = None,
                     memory_mask: Optional[Tensor] = None,
-                    # tgt_key_padding_mask: Optional[Tensor] = None,
-                    # memory_key_padding_mask: Optional[Tensor] = None,
+                    tgt_key_padding_mask: Optional[Tensor] = None,
+                    memory_key_padding_mask: Optional[Tensor] = None,
                     pos: Optional[Tensor] = None,
                     query_pos: Optional[Tensor] = None):
         tgt2 = self.norm1(tgt)
         q = k = self.with_pos_embed(tgt2, query_pos)
         tgt2 = self.self_attn(q, k, value=tgt2, attn_mask=tgt_mask,
-                              # key_padding_mask=tgt_key_padding_mask
+                              key_padding_mask=tgt_key_padding_mask
                               )[0]
         tgt = tgt + self.dropout1(tgt2)
         tgt2 = self.norm2(tgt)
         tgt2 = self.multihead_attn(query=self.with_pos_embed(tgt2, query_pos),
                                    key=self.with_pos_embed(memory, pos),
                                    value=memory, attn_mask=memory_mask,
-                                   # key_padding_mask=memory_key_padding_mask
+                                   key_padding_mask=memory_key_padding_mask
                                    )[0]
         tgt = tgt + self.dropout2(tgt2)
         tgt2 = self.norm3(tgt)
@@ -668,8 +667,14 @@ class TransformerDecoderLayer(nn.Module):
                 query_pos: Optional[Tensor] = None):
         # iwasaki comment [2023-07-06 16:40:06]: Comment out
         # if self.normalize_before:
-        return self.forward_pre(tgt, memory, tgt_mask, memory_mask,
-                                tgt_key_padding_mask, memory_key_padding_mask, pos, query_pos)
+        return self.forward_pre(tgt,
+                                memory,
+                                tgt_mask,
+                                memory_mask,
+                                tgt_key_padding_mask,
+                                memory_key_padding_mask,
+                                pos,
+                                query_pos)
         # iwasaki comment [2023-07-06 16:40:06]: Comment out
         # return self.forward_post(tgt, memory, tgt_mask, memory_mask,
         #                          tgt_key_padding_mask, memory_key_padding_mask, pos, query_pos)
@@ -797,9 +802,8 @@ class SwinTransformer(nn.Module):
         x_relative_position_bias = []
         for layer in self.layers:
             x, relative_position_bias = layer(x)
-            # iwasaki comment [2023-07-05 20:37:05]
-            # x size is [B, L, C]
-            x_features.append(x.transpose(0, 1))  # [L, B, C]
+            # iwasaki comment [2023-07-05 20:37:05] x size is [B, L, C]
+            x_features.append(x.permute(1, 0, 2))  # [L, B, C]
             x_relative_position_bias.append(relative_position_bias.unsqueeze(0))  # [1, nH, Wh*Ww, Wh*Ww]
 
         # x = self.norm(x)  # B L C
@@ -887,11 +891,11 @@ class PatchSelectionTransformer(nn.Module):
 
         # TODO: patch length = number of query
         # TODO: 各ウィンドウごとにdecoderを実行するようにしたい
-        query_embed_stage1 = self.query_embed.weight.unsqueeze(
+        query_embed_stage1 = self.query_embed_stage1.weight.unsqueeze(
                 1).repeat(1, bs, 1)
-        query_embed_stage2 = self.query_embed.weight.unsqueeze(
+        query_embed_stage2 = self.query_embed_stage2.weight.unsqueeze(
                 1).repeat(1, bs, 1)
-        query_embed_stage3 = self.query_embed.weight.unsqueeze(
+        query_embed_stage3 = self.query_embed_stage3.weight.unsqueeze(
                 1).repeat(1, bs, 1)
         # mask = mask.flatten(1)
 
@@ -900,6 +904,14 @@ class PatchSelectionTransformer(nn.Module):
         tgt_stage3 = torch.zeros_like(query_embed_stage3)
 
         # iwasaki comment [2023-07-05 20:37:05] self.decoder expect memory size is [L, B, C]
+        print(f"memories[0].shape: {memories[0].shape}")
+        print(f"pos_embed[0].shape: {pos_embed[0].shape}")
+
+        print(f"memories[1].shape: {memories[1].shape}")
+        print(f"pos_embed[1].shape: {pos_embed[1].shape}")
+
+        print(f"memories[2].shape: {memories[2].shape}")
+        print(f"pos_embed[2].shape: {pos_embed[2].shape}")
         hs1 = self.decoder_stage1(tgt_stage1, memories[0],
                                   # memory_key_padding_mask=mask,
                                   pos=pos_embed[0],
