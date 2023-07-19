@@ -6,7 +6,8 @@
 # --------------------------------------------------------
 
 from .swin_transformer import SwinTransformer
-from .swin_transformer import PatchSelectionTransformer
+# from .swin_transformer import PatchSelectionTransformer
+from .patch_selection_transformer import PatchSelectionTransformer
 from .swin_transformer_v2 import SwinTransformerV2
 from .swin_transformer_moe import SwinTransformerMoE
 from .swin_mlp import SwinMLP
@@ -127,10 +128,9 @@ def build_model(config, is_pretrain=False):
                                           normalize_before=config.MODEL_DECODER.NORMALIZE_BEFORE,
                                           return_intermediate_dec=config.MODEL_DECODER.RETURN_INTERMEDIATE_DEC,
                                           # swin transformer
-                                          img_size=config.DATA.IMG_SIZE,
+                                          pretrain_img_size=config.DATA.IMG_SIZE,
                                           patch_size=config.MODEL.SWIN.PATCH_SIZE,
                                           in_chans=config.MODEL.SWIN.IN_CHANS,
-                                          num_classes=config.MODEL.NUM_CLASSES,
                                           embed_dim=config.MODEL.SWIN.EMBED_DIM,
                                           depths=config.MODEL.SWIN.DEPTHS,
                                           num_heads=config.MODEL.SWIN.NUM_HEADS,
@@ -143,8 +143,9 @@ def build_model(config, is_pretrain=False):
                                           ape=config.MODEL.SWIN.APE,
                                           norm_layer=layernorm,
                                           patch_norm=config.MODEL.SWIN.PATCH_NORM,
-                                          use_checkpoint=config.TRAIN.USE_CHECKPOINT,
-                                          fused_window_process=config.FUSED_WINDOW_PROCESS)
+                                          out_indices=config.MODEL.SWIN.OUT_INDICES,
+                                          frozen_stages=config.MODEL.SWIN.FROZEN_STAGES,
+                                          use_checkpoint=config.TRAIN.USE_CHECKPOINT)
     else:
         raise NotImplementedError(f"Unkown model: {model_type}")
 
