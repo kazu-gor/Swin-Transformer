@@ -833,25 +833,32 @@ class PatchSelectionTransformer(nn.Module):
         decoder_norm_stage3 = nn.LayerNorm(d_model*4)
 
         self.decoder_stage1 = TransformerDecoder(
-                decoder_layer_stage1, num_decoder_layers, decoder_norm_stage1,
-                return_intermediate=return_intermediate_dec
+            decoder_layer_stage1, num_decoder_layers, decoder_norm_stage1,
+            return_intermediate=return_intermediate_dec
         )
         self.decoder_stage2 = TransformerDecoder(
-                decoder_layer_stage2, num_decoder_layers, decoder_norm_stage2,
-                return_intermediate=return_intermediate_dec
+            decoder_layer_stage2, num_decoder_layers, decoder_norm_stage2,
+            return_intermediate=return_intermediate_dec
         )
         self.decoder_stage3 = TransformerDecoder(
-                decoder_layer_stage3, num_decoder_layers, decoder_norm_stage3,
-                return_intermediate=return_intermediate_dec
+            decoder_layer_stage3, num_decoder_layers, decoder_norm_stage3,
+            return_intermediate=return_intermediate_dec
         )
 
         self.class_embed_stage1 = nn.Linear(d_model, 1)
         self.class_embed_stage2 = nn.Linear(d_model*2, 1)
         self.class_embed_stage3 = nn.Linear(d_model*4, 1)
 
-        self.query_embed_stage1 = nn.Embedding(num_queries, d_model)
-        self.query_embed_stage2 = nn.Embedding(num_queries, d_model*2)
-        self.query_embed_stage3 = nn.Embedding(num_queries, d_model*4)
+        self.query_embed_stage1 = nn.Embedding(
+            (pretrain_img_size // patch_size) ** 2, d_model
+        )
+        self.query_embed_stage2 = nn.Embedding(
+            (pretrain_img_size // (patch_size * 2)) ** 2, d_model*2
+        )
+        self.query_embed_stage3 = nn.Embedding(
+            (pretrain_img_size // (patch_size * 4)) ** 2, d_model*4
+        )
+
         self.patch_size = patch_size
 
     def forward(self, src):  # src size is [B, C, H, W]
@@ -873,8 +880,6 @@ class PatchSelectionTransformer(nn.Module):
         tgt_stage2 = torch.zeros_like(query_embed_stage2)
         tgt_stage3 = torch.zeros_like(query_embed_stage3)
 
-        print(f"{memories[0].shape=}")
-        print(f"{memories[0].permute(1, 0, 2).contiguous().shape=}")
         # iwasaki comment [2023-07-05 20:37:05] self.decoder expect memory size is [L, B, C]
         hs1 = self.decoder_stage1(tgt_stage1, memories[0].permute(1, 0, 2).contiguous(),
                                   # memory_key_padding_mask=mask,
@@ -895,9 +900,9 @@ class PatchSelectionTransformer(nn.Module):
 
         # TODO: それぞれのクラス出力を統合する
         out = {
-               'stage1': outputs_class_stage1,
-               'stage2': outputs_class_stage2,
-               'stage3': outputs_class_stage3
+               'stage1': outputs_class_stage1.view(bs, -1),
+               'stage2': outputs_class_stage2.view(bs, -1),
+               'stage3': outputs_class_stage3.view(bs, -1)
         }
         return out
 
