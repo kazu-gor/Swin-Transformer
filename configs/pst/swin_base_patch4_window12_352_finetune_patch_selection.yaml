@@ -1,16 +1,17 @@
 DATA:
-  IMG_SIZE: 224
+  IMG_SIZE: 352
+  BATCH_SIZE: 16
 MODEL:
   TYPE: pst
   NAME: swin_base_patch4_window12_352_finetune_patch_selection
-  # TYPE: swin
-  # NAME: swin_tiny_patch4_window7_224
   DROP_PATH_RATE: 0.1
   SWIN:
     EMBED_DIM: 96
-    DEPTHS: [ 2, 2, 6, 2 ]
-    NUM_HEADS: [ 3, 6, 12, 24 ]
-    WINDOW_SIZE: 7
+    DEPTHS: [ 2, 2, 6 ]
+    NUM_HEADS: [ 3, 6, 12 ]
+    OUT_INDICES: [0, 1, 2]
+    PATCH_SIZE: 44
+    WINDOW_SIZE: 2
 TRAIN:
   EPOCHS: 90
   WARMUP_EPOCHS: 5
